@@ -3,7 +3,7 @@
 /*!
 \file server.cpp (e.g. main.cpp)
 \author Aloysius Liong, a.liong, 2201568
-(e.g. William ZHENG, william.zheng, 60001906)
+(e.g. William ZHENG, william.marble, 60001906)
 \par a.liong@digipen.edu (e.g. email: william.zheng\@digipen.edu)
 5
 \date Mar 2, 2024 (e.g. Jan 01, 2022)
