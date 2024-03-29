@@ -34,18 +34,19 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <thread>
 #include <regex>
 
+#include <filesystem>
 
 std::size_t limit = 805000000;
 enum CMDID {
- UNKNOWN = (unsigned char)0x0,//not used
- REQ_QUIT = (unsigned char)0x1,
- REQ_DOWNLOAD = (unsigned char)0x2,
- RSP_DOWNLOAD = (unsigned char)0x3,
- REQ_LISTFILES = (unsigned char)0x4,
- RSP_LISTFILES = (unsigned char)0x5,
- CMD_TEST = (unsigned char)0x20,//not used
- DOWNLOAD_ERROR = (unsigned char)0x30
- };
+    UNKNOWN = (unsigned char)0x0,//not used
+    REQ_QUIT = (unsigned char)0x1,
+    REQ_DOWNLOAD = (unsigned char)0x2,
+    RSP_DOWNLOAD = (unsigned char)0x3,
+    REQ_LISTFILES = (unsigned char)0x4,
+    RSP_LISTFILES = (unsigned char)0x5,
+    CMD_TEST = (unsigned char)0x20,//not used
+    DOWNLOAD_ERROR = (unsigned char)0x30
+};
 
 /*!***********************************************************************
 \brief CustomEcho function takes a command string, extracts IP address,
@@ -87,18 +88,71 @@ void appendToPacket(std::vector<unsigned char>& packet, const void* data, size_t
     const unsigned char* bytes = reinterpret_cast<const unsigned char*>(data);
     packet.insert(packet.end(), bytes, bytes + size);
 }
+void handleListFilesResponse(const char* buffer, int bytesReceived) {
+    // Assuming the first 2 bytes after command ID indicate the number of files
+    if (bytesReceived > 1) { // Check there's enough data for the number of files
+        uint16_t numFiles;
+        memcpy(&numFiles, buffer + 1, sizeof(numFiles));
+        numFiles = ntohs(numFiles); // Convert from network byte order to host
 
+        size_t index = 3; // Start index of file paths in the buffer
+        for (int i = 0; i < numFiles; ++i) {
+            // Assuming each file path is preceded by its length (2 bytes, network byte order)
+            if (index + 2 > bytesReceived) break; // Sanity check
+
+            uint16_t pathLength;
+            memcpy(&pathLength, buffer + index, sizeof(pathLength));
+            pathLength = ntohs(pathLength); // Convert from network byte order to host
+            index += 2;
+
+            if (index + pathLength > bytesReceived) break; // Sanity check
+
+            std::string filePath(buffer + index, pathLength);
+            std::cout << "File: " << filePath << std::endl;
+
+            index += pathLength;
+        }
+    }
+}
 int main() {
-    std::string serverIP;
-    uint16_t port;
+    const uint16_t serverTCPPort = 9000;
+    const uint16_t serverUDPPort = 9001;
+    const uint16_t clientUDPPort = 9002;
+    const std::string downloadPath = "C:\\Users\\chuak\\source\\repos\\Ass3_Server\\Ass3_Server\\";
+    const int slidingWindowSize = 1;
+    const double packetLossRate = 1.0; // 100% packet loss rate for demonstration
+    const int ackTimer = 10; // Acknowledgement timer in milliseconds
+    const std::string serverIP = "192.168.15.1";
+
+    // Print server settings
+    std::cout << "Server TCP Port Number: " << serverTCPPort << std::endl;
+    std::cout << "Server UDP Port Number: " << serverUDPPort << std::endl;
+    std::cout << "Download path: " << downloadPath << std::endl;
+    std::cout << "Sliding window size [1,100]: " << slidingWindowSize << std::endl;
+    std::cout << "Packet loss rate [0.0-1.0]: " << packetLossRate << std::endl;
+    std::cout << "Ack timer [10ms-500ms]: " << ackTimer << " ms" << std::endl;
+   /* std::string serverIP;
+    int serverTCPPort, serverUDPPort, clientUDPPort, slidingWindow;
+    float packetLoss;
+    std::string downloadPath;
 
     std::cout << "Server IP Address: ";
     std::cin >> serverIP;
+    std::cout << "\nServer TCP Port Number: ";
+    std::cin >> serverTCPPort;
+    std::cout << "\nServer UDP Port Number: ";
+    std::cin >> serverUDPPort;
+    std::cout << "\nClient UDP Port Number: ";
+    std::cin >> clientUDPPort;
+    std::cout << "\nPath to store files: ";
+    std::cin >> downloadPath;
+    std::cout << "\nSliding window size: ";
+    std::cin >> slidingWindow;
+    std::cout << "\nPacket loss rate: ";
+    std::cin >> packetLoss;*/
 
-    std::cout << "\nServer Port Number: ";
-    std::cin >> port;
-
-    const std::string portString = std::to_string(port);
+    const std::string portString = std::to_string(serverTCPPort);
+    const std::string UDPportString = std::to_string(clientUDPPort);
 
     WSADATA wsaData{};
     SecureZeroMemory(&wsaData, sizeof(wsaData));
@@ -110,6 +164,7 @@ int main() {
         return errorCode;
     }
 
+    // Setup TCP connection
     addrinfo hints{};
     SecureZeroMemory(&hints, sizeof(hints));
     hints.ai_family = AF_INET;
@@ -118,31 +173,22 @@ int main() {
 
     addrinfo* info = nullptr;
     errorCode = getaddrinfo(serverIP.c_str(), portString.c_str(), &hints, &info);
-    if ((errorCode) || (info == nullptr))
-    {
+    if ((errorCode) || (info == nullptr)) {
         std::cerr << "getaddrinfo() failed." << std::endl;
         WSACleanup();
         return errorCode;
     }
 
-    SOCKET clientSocket = socket(
-        info->ai_family,
-        info->ai_socktype,
-        info->ai_protocol);
-    if (clientSocket == INVALID_SOCKET)
-    {
+    SOCKET clientSocket = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+    if (clientSocket == INVALID_SOCKET) {
         std::cerr << "socket() failed." << std::endl;
         freeaddrinfo(info);
         WSACleanup();
         return 2;
     }
 
-    errorCode = connect(
-        clientSocket,
-        info->ai_addr,
-        static_cast<int>(info->ai_addrlen));
-    if (errorCode == SOCKET_ERROR)
-    {
+    errorCode = connect(clientSocket, info->ai_addr, static_cast<int>(info->ai_addrlen));
+    if (errorCode == SOCKET_ERROR) {
         std::cerr << "connect() failed." << std::endl;
         freeaddrinfo(info);
         closesocket(clientSocket);
@@ -150,10 +196,38 @@ int main() {
         return 3;
     }
 
-    std::string text;
-    constexpr size_t BUFFER_SIZE = 1000;
-    char buffer[BUFFER_SIZE];
+    std::cout << "TCP connection established." << std::endl;
+    freeaddrinfo(info); // No longer need the address information for TCP
 
+    // Setup UDP socket for receiving file data
+    SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (udpSocket == INVALID_SOCKET) {
+        std::cerr << "UDP socket() failed." << std::endl;
+        closesocket(clientSocket);
+        WSACleanup();
+        return 4;
+    }
+
+    sockaddr_in udpClientAddr;
+    udpClientAddr.sin_family = AF_INET;
+    udpClientAddr.sin_port = htons(static_cast<unsigned short>(clientUDPPort));
+    udpClientAddr.sin_addr.s_addr = htonl(INADDR_ANY); // Listen on any IP the client machine has
+
+    errorCode = bind(udpSocket, reinterpret_cast<sockaddr*>(&udpClientAddr), sizeof(udpClientAddr));
+    if (errorCode == SOCKET_ERROR) {
+        std::cerr << "UDP bind() failed." << std::endl;
+        closesocket(udpSocket);
+        closesocket(clientSocket);
+        WSACleanup();
+        return 5;
+    }
+
+    std::string text;
+    std::cin.ignore(65535, '\n');
+    std::cin >> std::ws;
+    constexpr size_t BUFFER_SIZE = 1024;
+    char buffer[BUFFER_SIZE];
+    bool running = true;
     /*!***********************************************************************
     \brief This is a sending thread or loop responsible for getting user input
            and processing different commands.
@@ -162,8 +236,9 @@ int main() {
     *************************************************************************/
     // Sending thread or loop
     std::thread send_thread([&]() {
-        while (true) {
+        while (running) {
             // Get user input
+            std::cout << "\nCommand Prompt > ";
             std::getline(std::cin, text);
 
             /*!***********************************************************************
@@ -185,6 +260,7 @@ int main() {
                 closesocket(clientSocket);
                 WSACleanup();
                 std::cout << "disconnecting..." << std::endl;
+                running = false;
                 break;
             }
             /*!***********************************************************************
@@ -194,7 +270,7 @@ int main() {
             \param text The input text to be checked for a list users command.
             *************************************************************************/
             else if (text == "/l") {
-                unsigned char listUsersCommand = CMDID::REQ_LISTUSERS; // Assuming REQ_LISTUSERS is defined correctly
+                unsigned char listUsersCommand = CMDID::REQ_LISTFILES; // Assuming REQ_LISTUSERS is defined correctly
                 unsigned char buffer[sizeof(listUsersCommand)];
                 std::memcpy(buffer, &listUsersCommand, sizeof(listUsersCommand));
 
@@ -212,41 +288,53 @@ int main() {
 
             \param text The input text to be checked for an echo command.
             *************************************************************************/
-            else if (text.substr(0, 2) == "/e") {
-                std::string ip;
-                uint16_t port;
-                std::string message;
-                if (CustomEcho(text, ip, port, message)) {
-                    // Construct the echo packet
-                    std::vector<unsigned char> packet;
-                    packet.push_back(REQ_ECHO); // Command ID
+            if (text.size() > 3 && text.substr(0, 3) == "/d") {
+                std::string ipAddress, portStr, fileName;
+                std::istringstream iss(text.substr(3)); // Create a stream from the command without the "/d"
+                // Parse the command format "/d <IP>:<Port> <FileName>"
+                if (std::getline(iss, ipAddress, ':') && std::getline(iss, portStr, ' ') && std::getline(iss, fileName)) {
+                    // Parse IP address and port number
+                    in_addr ipAddr;
+                    inet_pton(AF_INET, ipAddress.c_str(), &ipAddr); // Convert string IP to binary form
+                    uint16_t port = static_cast<uint16_t>(std::stoi(portStr)); // Convert port string to int
 
-                    in_addr ip_addr;
-                    if (inet_pton(AF_INET, ip.c_str(), &ip_addr) != 1) {
-                        std::cerr << "Invalid IP address format.\n";
-                        return;
-                    }
-                    appendToPacket(packet, &ip_addr.s_addr, sizeof(ip_addr.s_addr));
+                    // Create the REQ_DOWNLOAD message
+                    unsigned char buffer[BUFFER_SIZE];
+                    int messageLength = 0;
+                    buffer[messageLength++] = static_cast<char>(CMDID::REQ_DOWNLOAD);
 
-                    uint16_t port_network = htons(port);
-                    appendToPacket(packet, &port_network, sizeof(port_network));
+                    // Append the IP address to the message
+                    std::memcpy(buffer + messageLength, &ipAddr, sizeof(ipAddr));
+                    messageLength += sizeof(ipAddr);
 
-                    uint32_t message_length = htonl(message.size());
-                    appendToPacket(packet, &message_length, sizeof(message_length));
+                    // Append the port number to the message (in network byte order)
+                    uint16_t portNetworkOrder = htons(port);
+                    std::memcpy(buffer + messageLength, &portNetworkOrder, sizeof(portNetworkOrder));
+                    messageLength += sizeof(portNetworkOrder);
 
-                    appendToPacket(packet, message.data(), message.size());
+                    // Append the length of the file name (in network byte order) to the message
+                    uint32_t fileNameLengthNetworkOrder = htonl(static_cast<uint32_t>(fileName.size()));
+                    std::memcpy(buffer + messageLength, &fileNameLengthNetworkOrder, sizeof(fileNameLengthNetworkOrder));
+                    messageLength += sizeof(fileNameLengthNetworkOrder);
 
-                    if (send(clientSocket, reinterpret_cast<const char*>(packet.data()), packet.size(), 0) == SOCKET_ERROR) {
-                        std::cerr << "send() failed with error: " << WSAGetLastError() << std::endl;
+                    // Append the file name to the message
+                    std::memcpy(buffer + messageLength, fileName.c_str(), fileName.size());
+                    messageLength += fileName.size();
+
+                    // Send the message to the server
+                    if (send(clientSocket, reinterpret_cast<const char*>(buffer), messageLength, 0) == SOCKET_ERROR) {
+                        std::cerr << "Failed to send download request. Error: " << WSAGetLastError() << std::endl;
                     }
                 }
                 else {
-                    std::cerr << "Invalid echo command format." << std::endl;
+                    std::cerr << "Invalid download command format. Use: /d <IP>:<Port> <FileName>\n";
                 }
             }
+
+
+
             std::cin.clear();
-
-
+           //std::cin.ignore(std::numeric_limits<std::streamsize>::dmax(), '\n');
         }
         });
 
@@ -258,129 +346,86 @@ int main() {
     *************************************************************************/
     // Receiving thread or loop
     std::thread receive_thread([&]() {
-        while (true) {
+        while (running) {
             int bytesReceived = recv(clientSocket, buffer, BUFFER_SIZE - 1, 0);
             if (bytesReceived == SOCKET_ERROR)
             {
                 std::cerr << "disconnecting...\n";
+                running = false;
                 break;
             }
 
             CMDID commandId = static_cast<CMDID>(buffer[0]);
+            // Inside your receiving loop or thread:
+            if (commandId == RSP_LISTFILES) {
+                std::cout << "\n==========RECV START==========" << std::endl;
 
-            /*!***********************************************************************
-            \brief Processes the response for the list users command from the server.
+                // The first two bytes after command ID indicate the number of files
+                if (bytesReceived > 3) { // Check there's enough data for the number of files
+                    uint16_t numFiles;
+                    memcpy(&numFiles, buffer + 1, sizeof(numFiles));
+                    numFiles = ntohs(numFiles); // Convert from network byte order to host
 
-            \param None.
-            *************************************************************************/
-            if (commandId == RSP_LISTUSERS)
-            {
-                // Extract the number of users
-                uint16_t numUsers;
-                std::copy(buffer + 1, buffer + 3, reinterpret_cast<unsigned char*>(&numUsers));
-                numUsers = ntohs(numUsers); // Convert from network byte order to host byte order
+                    std::cout << "# of Files: " << numFiles << std::endl;
 
-                size_t offset = 3;
-                std::cout << "==========RECV START==========\nUsers:" << std::endl;
-                for (int i = 0; i < numUsers; ++i) {
-                    // Extract IP address
-                    uint32_t ipAddr;
-                    std::copy(buffer + offset, buffer + offset + 4, reinterpret_cast<unsigned char*>(&ipAddr));
-                    offset += 4;
+                    size_t index = 3; // Start index of file paths in the buffer
+                    for (int i = 0; i < numFiles; ++i) {
+                        // Each file path is preceded by its length (2 bytes, network byte order)
+                        if (index + 2 > bytesReceived) break; // Sanity check
 
-                    // Extract port
-                    uint16_t port;
-                    std::copy(buffer + offset, buffer + offset + 2, reinterpret_cast<unsigned char*>(&port));
-                    port = ntohs(port); // Convert port to host byte order
-                    offset += 2;
+                        uint16_t pathLength;
+                        memcpy(&pathLength, buffer + index, sizeof(pathLength));
+                        pathLength = ntohs(pathLength); // Convert from network byte order to host
+                        index += 2;
 
-                    // Convert IP address to string
-                    struct in_addr ip_addr_struct;
-                    ip_addr_struct.s_addr = ipAddr;
-                    char str_ip[INET_ADDRSTRLEN];
-                    inet_ntop(AF_INET, &ip_addr_struct, str_ip, INET_ADDRSTRLEN);
+                        if (index + pathLength > bytesReceived) break; // Sanity check
+                        std::filesystem::path filePathObj(buffer + index, buffer + index + pathLength);
+                        std::string fileName = filePathObj.filename().string();
+                        std::cout << (i + 1) << "-th file: " << fileName << std::endl;
 
-                    std::cout << str_ip << ":" << port << std::endl;
+                        index += pathLength; // Move to the start of the next file entry
+                    }
                 }
+
                 std::cout << "==========RECV END==========" << std::endl;
             }
-
-            /*!***********************************************************************
-            \brief Processes the response for the echo command from the server.
-
-            \param None.
-            *************************************************************************/
-            else if (commandId == RSP_ECHO)
-            {
-                // Extract the source IP address
-                uint32_t ipAddr;
-                std::copy(buffer + 1, buffer + 5, reinterpret_cast<unsigned char*>(&ipAddr));
-
-                // Convert IP address to string
-                struct in_addr ip_addr_struct;
-                ip_addr_struct.s_addr = ipAddr;
-                char str_ip[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &ip_addr_struct, str_ip, INET_ADDRSTRLEN);
-
-                // Extract the source port
-                uint16_t port;
-                std::copy(buffer + 5, buffer + 7, reinterpret_cast<unsigned char*>(&port));
-                port = ntohs(port); // Convert port to host byte order
-
-                // Extract the message length
-                uint32_t message_length;
-                std::copy(buffer + 7, buffer + 11, reinterpret_cast<unsigned char*>(&message_length));
-                message_length = ntohl(message_length); // Convert to host byte order
-
-                // Extract the message
-                std::string message(buffer + 11, buffer + 11 + message_length);
-
-                std::cout << "==========RECV START==========" << std::endl;
-                std::cout << str_ip << ":" << port << std::endl;
-                std::cout << message << std::endl;
-                std::cout << "==========RECV END==========" << std::endl;
-            }
-
-            /*!***********************************************************************
-            \brief Processes the request echo command.
-
-            \param None.
-            *************************************************************************/
-            else if (REQ_ECHO) {
-                std::vector<unsigned char> packet;
-                packet.push_back(RSP_ECHO);
-                uint32_t ipAddr = *reinterpret_cast<uint32_t*>(buffer + 1);
-                char str_ip[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET, &ipAddr, str_ip, INET_ADDRSTRLEN);
-
-                // IP Address in network byte order
-                std::memcpy(&ipAddr, buffer + 1, sizeof(ipAddr));
-
-                // Port in network byte order
-                uint16_t port = ntohs(*reinterpret_cast<const uint16_t*>(buffer + 5));
-
-                // Message length and message
-                uint32_t messageLength = ntohl(*reinterpret_cast<const uint32_t*>(buffer + 7));
-
-                std::string message(reinterpret_cast<char*>(buffer + 11), messageLength);
-
-                std::cout << "==========RECV START==========" << std::endl;
-                std::cout << str_ip << ":" << port << std::endl;
-                std::cout << message << std::endl;
-                std::cout << "==========RECV END==========" << std::endl;
-
-                appendToPacket(packet, &ipAddr, sizeof(ipAddr));
-                uint16_t port_network = htons(port);
-                appendToPacket(packet, &port_network, sizeof(port));
-                uint32_t length = htonl(static_cast<uint32_t>(message.size()));
-                appendToPacket(packet, &length, sizeof(length));
-                packet.insert(packet.end(), message.begin(), message.end());
-
-                // Send the packet
-                if (send(clientSocket, reinterpret_cast<const char*>(packet.data()), packet.size(), 0) == SOCKET_ERROR) {
-                    std::cerr << "send() failed with error: " << WSAGetLastError() << std::endl;
+            else if (commandId == RSP_DOWNLOAD) {
+                // Assuming the UDP port is known and the UDP socket (udpSocket) is already set up and bound
+                std::ofstream outputFile("received_file.dat", std::ios::binary);
+                if (!outputFile.is_open()) {
+                    std::cerr << "Failed to open file for writing.\n";
+                    continue;
                 }
+
+                char udpBuffer[1024];
+                sockaddr_in fromAddr;
+                int fromAddrSize = sizeof(fromAddr);
+                bool fileComplete = false;
+
+                // Listen for UDP packets
+                while (!fileComplete) {
+                    int bytesReceivedUDP = recvfrom(udpSocket, udpBuffer, sizeof(udpBuffer), 0, (sockaddr*)&fromAddr, &fromAddrSize);
+                    if (bytesReceivedUDP > 0) {
+                        // Write received bytes into the file
+                        outputFile.write(udpBuffer, bytesReceivedUDP);
+                    }
+                    else if (bytesReceivedUDP == 0) {
+                        fileComplete = true; // Assuming end of file transmission is marked by a 0-byte packet
+                    }
+                    else {
+                        std::cerr << "UDP recvfrom() failed or connection closed prematurely.\n";
+                        break;
+                    }
+                }
+
+                if (fileComplete) {
+                    std::cout << "File download completed.\n";
+                }
+
+                outputFile.close();
             }
+
+
         }
         });
     // Wait for both threads to finish if they are used, otherwise, the loops will just run consecutively

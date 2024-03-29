@@ -32,7 +32,8 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <functional>
 #include <optional>
 #include <fstream>
-
+#include <filesystem>
+namespace fs = std::filesystem;
 #pragma comment(lib, "ws2_32.lib")
 
 enum CMDID {
@@ -48,7 +49,7 @@ enum CMDID {
 
 static std::mutex _stdoutMutex;
 std::vector<std::pair<SOCKET, std::pair<std::string, std::string>>> clientsVector;
-
+std::string downloadPath;
 template <typename TItem, typename TAction, typename TOnDisconnect>
 class TaskQueue {
 public:
@@ -244,7 +245,7 @@ private:
 
 };
 
-bool execute(SOCKET clientSocket);
+bool execute(SOCKET clientSocket, SOCKET udpSocket);
 void disconnect(SOCKET& listenerSocket);
 
 /*!***********************************************************************
@@ -286,30 +287,45 @@ std::string ipAddressToString(uint32_t ipAddress) {
 
 //*********************************************************************************//
 int main() {
-    uint16_t serverTCPPortNumber;
-    uint16_t serverUDPPortNumber;
-    std::string downloadPath;
-    int slidingWindowSize;
-    double packetLossRate;
-    int ackTimer; // Acknowledgement timer in milliseconds
+    const uint16_t serverTCPPortNumber = 9000;
+    const uint16_t serverUDPPortNumber = 9001;
+    const uint16_t clientUDPPort = 9002;
+    const std::string downloadPath = "C:\\Users\\chuak\\source\\repos\\Ass3_Server\\Ass3_Server\\Test";
+    const int slidingWindowSize = 1;
+    const double packetLossRate = 1.0; // 100% packet loss rate for demonstration
+    const int ackTimer = 10; // Acknowledgement timer in milliseconds
+    const std::string serverIP = "192.168.15.1";
 
-    std::cout << "Server TCP Port Number: ";
-    std::cin >> serverTCPPortNumber;
+    // Print server settings
+    std::cout << "Server TCP Port Number: " << serverTCPPortNumber << std::endl;
+    std::cout << "Server UDP Port Number: " << serverUDPPortNumber << std::endl;
+    std::cout << "Download path: " << downloadPath << std::endl;
+    std::cout << "Sliding window size [1,100]: " << slidingWindowSize << std::endl;
+    std::cout << "Packet loss rate [0.0-1.0]: " << packetLossRate << std::endl;
+    std::cout << "Ack timer [10ms-500ms]: " << ackTimer << " ms" << std::endl;
+    //uint16_t serverTCPPortNumber;
+    //uint16_t serverUDPPortNumber;
+    //int slidingWindowSize;
+    //double packetLossRate;
+    //int ackTimer; // Acknowledgement timer in milliseconds
 
-    std::cout << "Server UDP Port Number: ";
-    std::cin >> serverUDPPortNumber;
+    //std::cout << "Server TCP Port Number: ";
+    //std::cin >> serverTCPPortNumber;
 
-    std::cout << "Download path: ";
-    std::cin >> downloadPath;
+    //std::cout << "Server UDP Port Number: ";
+    //std::cin >> serverUDPPortNumber;
 
-    std::cout << "Sliding window size [1,100]: ";
-    std::cin >> slidingWindowSize;
+    //std::cout << "Download path: ";
+    //std::cin >> downloadPath;
 
-    std::cout << "Packet loss rate [0.0-1.0]: ";
-    std::cin >> packetLossRate;
+    //std::cout << "Sliding window size [1,100]: ";
+    //std::cin >> slidingWindowSize;
 
-    std::cout << "Ack timer [10ms-500ms]: ";
-    std::cin >> ackTimer;
+    //std::cout << "Packet loss rate [0.0-1.0]: ";
+    //std::cin >> packetLossRate;
+
+    //std::cout << "Ack timer [10ms-500ms]: ";
+    //std::cin >> ackTimer;
 
     std::string portString = std::to_string(serverTCPPortNumber);
     std::string UDPportString = std::to_string(serverUDPPortNumber);
@@ -426,7 +442,8 @@ int main() {
     }
 
     const auto onDisconnect = [&]() { disconnect(tcpSocket); };
-    auto tq = TaskQueue<SOCKET, decltype(execute), decltype(onDisconnect)>{ 10, 15, execute, onDisconnect };
+    auto executeAction = [udpSocket](SOCKET clientSocket) { return execute(clientSocket, udpSocket); };
+    auto tq = TaskQueue<SOCKET, decltype(executeAction), decltype(onDisconnect)>{ 10, 15, executeAction, onDisconnect };
     while (tcpSocket != INVALID_SOCKET)
     {
         sockaddr clientAddress{};
@@ -490,7 +507,7 @@ void disconnect(SOCKET& listenerSocket)
 \param clientSocket The socket connected to the client.
 \return Returns true if the execution is successful and the connection should stay open; otherwise, returns false.
 *************************************************************************/
-bool execute(SOCKET clientSocket)
+bool execute(SOCKET clientSocket, SOCKET udpSocket)
 {
 
     // -------------------------------------------------------------------------
@@ -500,7 +517,7 @@ bool execute(SOCKET clientSocket)
     // send()
     // -------------------------------------------------------------------------
 
-    constexpr size_t BUFFER_SIZE = 1000;
+    constexpr size_t BUFFER_SIZE = 1024;
     char buffer[BUFFER_SIZE];
     bool stay = true;
     char ipStr[INET_ADDRSTRLEN];
@@ -526,192 +543,99 @@ bool execute(SOCKET clientSocket)
         // Determine the command ID
         CMDID commandId = static_cast<CMDID>(buffer[0]);
 
-        //// Handle REQ_LISTUSERS command
-        //if (commandId == REQ_LISTUSERS) {
+        // Handle REQ_LISTFILES command
+        if (commandId == REQ_LISTFILES) {
+            // Define the directory you want to list files from
+            std::string directoryPath = downloadPath; // Update this with the actual path
 
-        //    // Start building the response message
-        //    std::vector<unsigned char> response;
-        //    response.push_back(RSP_LISTUSERS); // Command ID
+            // Start building the response message
+            std::vector<unsigned char> response;
+            response.push_back(RSP_LISTFILES); // Command ID
 
-        //    // Number of users
-        //    uint16_t numUsers = htons(static_cast<uint16_t>(clientsVector.size()));
-        //    response.insert(response.end(), reinterpret_cast<unsigned char*>(&numUsers), reinterpret_cast<unsigned char*>(&numUsers) + sizeof(numUsers));
+            // Placeholder for files count, will be updated later
+            size_t filesCountPosition = response.size();
+            uint16_t numFiles = 0; // We will count the files and update this later
+            response.resize(response.size() + sizeof(numFiles)); // Reserve space for the files count
 
-        //    // User data
-        //    for (const auto& [clientSocket, clientInfo] : clientsVector) {
-        //        // IP address
-        //        in_addr ipAddr;
-        //        inet_pton(AF_INET, clientInfo.first.c_str(), &ipAddr);
-        //        uint32_t ipNetworkOrder = ipAddr.s_addr; // No need to use htonl here
-        //        response.insert(response.end(), reinterpret_cast<unsigned char*>(&ipNetworkOrder), reinterpret_cast<unsigned char*>(&ipNetworkOrder) + sizeof(ipNetworkOrder));
+            // List files
+            for (const auto& entry : fs::directory_iterator(directoryPath)) {
+                if (entry.is_regular_file()) {
+                    std::string filePath = entry.path().string();
+                    // Append file path length and file path to the response
+                    uint16_t filePathLength = htons(static_cast<uint16_t>(filePath.size()));
+                    response.insert(response.end(), reinterpret_cast<unsigned char*>(&filePathLength), reinterpret_cast<unsigned char*>(&filePathLength) + sizeof(filePathLength));
+                    response.insert(response.end(), filePath.begin(), filePath.end());
 
-        //        // Port number
-        //        uint16_t portNumber = htons(static_cast<uint16_t>(std::stoi(clientInfo.second)));
-        //        response.insert(response.end(), reinterpret_cast<unsigned char*>(&portNumber), reinterpret_cast<unsigned char*>(&portNumber) + sizeof(portNumber));
-        //    }
+                    ++numFiles; // Increment files count
+                }
+            }
 
-        //    // Send response
-        //    send(clientSocket, reinterpret_cast<char*>(response.data()), response.size(), 0);
-        //}
+            // Update files count in the response
+            numFiles = htons(numFiles); // Convert files count to network byte order
+            std::copy(reinterpret_cast<unsigned char*>(&numFiles), reinterpret_cast<unsigned char*>(&numFiles) + sizeof(numFiles), response.begin() + filesCountPosition);
 
-        //else if (commandId == REQ_ECHO) {
-        //    const int IP_OFFSET = 1;
-        //    const int PORT_OFFSET = IP_OFFSET + sizeof(uint32_t);
-        //    const int TEXT_LENGTH_OFFSET = PORT_OFFSET + sizeof(uint16_t);
-        //    const int MESSAGE_TEXT_OFFSET = TEXT_LENGTH_OFFSET + sizeof(uint32_t);
+            // Send response
+            send(clientSocket, reinterpret_cast<char*>(response.data()), response.size(), 0);
+        }
+        else if (commandId == REQ_DOWNLOAD) {
+            // Assuming buffer layout: [CMDID (1 byte)][IP Address (4 bytes)][Port (2 bytes)][File Name Length (4 bytes)][File Name (variable)]
+            size_t offset = 1; // Starting after CMDID
+            std::cout << "File sent: ";
+            // Extract client IP address
+            in_addr clientIP;
+            std::memcpy(&clientIP, buffer + offset, sizeof(clientIP));
+            offset += sizeof(clientIP);
 
-        //    uint32_t destIP = *reinterpret_cast<const uint32_t*>(buffer + IP_OFFSET);
-        //    uint16_t destPort = ntohs(*reinterpret_cast<const uint16_t*>(buffer + PORT_OFFSET));
+            // Extract client port
+            uint16_t clientPort;
+            std::memcpy(&clientPort, buffer + offset, sizeof(clientPort));
+            clientPort = ntohs(clientPort); // Convert from network byte order to host order
+            offset += sizeof(clientPort);
 
-        //    char ipStr[INET_ADDRSTRLEN];
-        //    inet_ntop(AF_INET, &destIP, ipStr, INET_ADDRSTRLEN);
+            // Extract file name length
+            uint32_t fileNameLength;
+            std::memcpy(&fileNameLength, buffer + offset, sizeof(fileNameLength));
+            fileNameLength = ntohl(fileNameLength); // Convert from network byte order to host order
+            offset += sizeof(fileNameLength);
 
-        //    // Extract the message text
-        //    // Assuming buffer[7] to buffer[10] contain the text length
-        //    uint32_t textLength = ntohl(*reinterpret_cast<const uint32_t*>(buffer + TEXT_LENGTH_OFFSET)); // Convert to host byte order
-        //    std::string messageText(buffer + MESSAGE_TEXT_OFFSET, textLength); // Extract the text
+            // Extract file name
+            std::string fileName(buffer + offset, fileNameLength);
+            std::string fullPath = downloadPath + "/" + fileName; // Assuming downloadPath is your server's download directory
 
-        //    //std::cout << ipStr << ":" << destPort << std::endl;
-        //    // Find the target client socket using the IP and port
-        //    SOCKET targetClientSocket = INVALID_SOCKET;
-        //    for (const auto& client : clientsVector) {
-        //        const auto& clientInfo = client.second;
-        //        if (clientInfo.first == ipStr && std::stoi(clientInfo.second) == destPort) {
-        //            targetClientSocket = client.first;
-        //            break;
-        //        }
-        //    }
+            // Open the file
+            std::ifstream file(fullPath, std::ios::binary);
+            if (!file.is_open()) {
+                // Error opening file
+                unsigned char errorResponse[] = { DOWNLOAD_ERROR };
+                send(clientSocket, reinterpret_cast<char*>(errorResponse), sizeof(errorResponse), 0);
+            }
+            else {
+                // Notify the client about the upcoming file transfer over UDP
+                unsigned char response[] = { RSP_DOWNLOAD };
+                send(clientSocket, reinterpret_cast<char*>(response), sizeof(response), 0);
 
-        //    // If the target client is found, forward the message
-        //    if (targetClientSocket != INVALID_SOCKET) {
-        //        // Found the target client socket, now forward the message
-        //        // Construct the message to send, beginning with the command ID for RSP_ECHO
+                // Send file over UDP
+                sockaddr_in clientAddr = {};
+                clientAddr.sin_family = AF_INET;
+                clientAddr.sin_port = htons(clientPort);
+                clientAddr.sin_addr = clientIP;
 
-        //        sockaddr_in sourceAddr;
-        //        int addrLen = sizeof(sourceAddr);
-        //        if (getpeername(clientSocket, (sockaddr*)&sourceAddr, &addrLen) == 0) {
-        //            std::vector<unsigned char> messageToSend;
-        //            std::vector<unsigned char> messageToBack;
+                char fileBuffer[1024];
+                while (file.read(fileBuffer, sizeof(fileBuffer)) || file.gcount() > 0) {
+                    sendto(udpSocket, fileBuffer, file.gcount(), 0, reinterpret_cast<sockaddr*>(&clientAddr), sizeof(clientAddr));
+                }
+                std::cout << "File sent: " << fullPath << std::endl;
+            }
+        }
 
-        //            uint32_t sourceIP = sourceAddr.sin_addr.s_addr;
-        //            uint16_t sourcePort = sourceAddr.sin_port;
-
-        //            // Construct the message
-        //            sourceIP = sourceAddr.sin_addr.s_addr;
-        //            sourcePort = sourceAddr.sin_port;
-
-        //            messageToSend.push_back(REQ_ECHO); // Command ID
-        //            appendValueToVector(messageToSend, sourceIP);
-        //            appendValueToVector(messageToSend, sourcePort);
-        //            appendValueToVector(messageToSend, htonl(textLength)); // Convert to network byte order
-        //            appendStringToVector(messageToSend, messageText);
-
-        //            // Construct message to back
-        //            messageToBack.push_back(REQ_ECHO); // Command ID
-        //            appendValueToVector(messageToBack, destIP);
-        //            appendValueToVector(messageToBack, htons(destPort)); // Convert to network byte order
-        //            appendValueToVector(messageToBack, htonl(textLength)); // Convert to network byte order
-        //            appendStringToVector(messageToBack, messageText);
-
-        //            // Printing the received message
-        //            std::cout << "==========RECV START==========" << std::endl;
-        //            std::cout << ipAddressToString(sourceIP) << ":" << htons(sourcePort) << std::endl;
-        //            std::cout << messageText << std::endl;
-        //            std::cout << "==========RECV END==========" << std::endl;
-
-        //            // Send the constructed message to the target client socket
-        //            const int bytesSent = send(targetClientSocket, reinterpret_cast<char*>(messageToSend.data()), messageToSend.size(), 0);
-        //            if (bytesSent == SOCKET_ERROR) {
-        //                std::cerr << "send() failed with error: " << WSAGetLastError() << std::endl;
-        //            }
-        //        }
-        //        else {
-        //            // Handle the error case where getsockname failed
-        //            std::cerr << "getpeername() failed with error: " << WSAGetLastError() << std::endl;
-        //        }
-
-        //    }
-        //    else {
-        //        // If the target client is not found, send an ECHO_ERROR response
-        //        //std::cout << "IP and Port: " << destPort << std::endl;
-        //        unsigned char errorResponse[] = { ECHO_ERROR };
-        //        send(clientSocket, (char*)errorResponse, sizeof(errorResponse), 0);
-        //    }
-        //}
-
-        //else if (RSP_ECHO) {
-        //    const int IP_OFFSET = 1;
-        //    const int PORT_OFFSET = IP_OFFSET + sizeof(uint32_t);
-        //    const int TEXT_LENGTH_OFFSET = PORT_OFFSET + sizeof(uint16_t);
-        //    const int MESSAGE_TEXT_OFFSET = TEXT_LENGTH_OFFSET + sizeof(uint32_t);
-
-        //    uint32_t destIP = *reinterpret_cast<const uint32_t*>(buffer + IP_OFFSET);
-        //    uint16_t destPort = ntohs(*reinterpret_cast<const uint16_t*>(buffer + PORT_OFFSET));
-
-        //    char ipStr[INET_ADDRSTRLEN];
-        //    inet_ntop(AF_INET, &destIP, ipStr, INET_ADDRSTRLEN);
-
-        //    // Extract the message text
-        //    // Assuming buffer[7] to buffer[10] contain the text length
-        //    uint32_t textLength = ntohl(*reinterpret_cast<const uint32_t*>(buffer + TEXT_LENGTH_OFFSET)); // Convert to host byte order
-        //    std::string messageText(buffer + MESSAGE_TEXT_OFFSET, textLength); // Extract the text
-
-        //    //std::cout << ipStr << ":" << destPort << std::endl;
-        //    // Find the target client socket using the IP and port
-        //    SOCKET targetClientSocket = INVALID_SOCKET;
-        //    for (const auto& client : clientsVector) {
-        //        const auto& clientInfo = client.second;
-        //        if (clientInfo.first == ipStr && std::stoi(clientInfo.second) == destPort) {
-        //            targetClientSocket = client.first;
-        //            break;
-        //        }
-        //    }
-
-        //    // If the target client is found, forward the message
-        //    if (targetClientSocket != INVALID_SOCKET) {
-        //        sockaddr_in sourceAddr;
-        //        int addrLen = sizeof(sourceAddr);
-        //        std::vector<unsigned char> messageToSend;
-        //        if (getpeername(clientSocket, (sockaddr*)&sourceAddr, &addrLen) == 0) {
-
-        //            uint32_t sourceIP = sourceAddr.sin_addr.s_addr;
-        //            uint16_t sourcePort = sourceAddr.sin_port;
-
-        //            // Construct the message
-        //            sourceIP = sourceAddr.sin_addr.s_addr;
-        //            sourcePort = sourceAddr.sin_port;
-
-        //            messageToSend.push_back(RSP_ECHO); // Command ID
-        //            appendValueToVector(messageToSend, sourceIP);
-        //            appendValueToVector(messageToSend, sourcePort);
-        //            appendValueToVector(messageToSend, htonl(textLength)); // Convert to network byte order
-        //            appendStringToVector(messageToSend, messageText);
-        //            // Send the constructed message to the target client socket
-        //            const int bytesSent = send(targetClientSocket, reinterpret_cast<char*>(messageToSend.data()), messageToSend.size(), 0);
-        //            if (bytesSent == SOCKET_ERROR) {
-        //                std::cerr << "send() failed with error: " << WSAGetLastError() << std::endl;
-        //            }
-        //        }
-        //        else {
-        //            // Handle the error case where getsockname failed
-        //            std::cerr << "getpeername() failed with error: " << WSAGetLastError() << std::endl;
-        //        }
-
-        //    }
-        //    else {
-        //        unsigned char errorResponse[] = { ECHO_ERROR };
-        //        send(clientSocket, (char*)errorResponse, sizeof(errorResponse), 0);
-        //    }
-        //}
-
-        //else if (commandId == REQ_QUIT) {
-        //    for (auto it = clientsVector.begin(); it != clientsVector.end(); ++it) {
-        //        if (it->first == clientSocket) {
-        //            clientsVector.erase(it);
-        //            break; // No need to continue iterating once found and erased
-        //        }
-        //    }
-        //}
+         else if (commandId == REQ_QUIT) {
+            for (auto it = clientsVector.begin(); it != clientsVector.end(); ++it) {
+                if (it->first == clientSocket) {
+                    clientsVector.erase(it);
+                    break; // No need to continue iterating once found and erased
+                }
+            }
+        }
     }
 
 
